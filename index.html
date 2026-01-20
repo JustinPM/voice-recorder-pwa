@@ -4,17 +4,22 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VoiceNotes PWA</title>
+    <link rel="manifest" href="manifest.json">
     <style>
-        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f4f4f9; }
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f4f4f9; color: #333; }
         .card { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        button { padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; }
+        button { padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; transition: opacity 0.2s; }
         .btn-record { background: #ff4757; color: white; }
         .btn-stop { background: #2f3542; color: white; }
-        .search-bar { width: 100%; padding: 10px; margin-bottom: 20px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
-        .note-item { border-bottom: 1px solid #eee; padding: 10px 0; }
-        .timestamp { font-size: 0.85em; color: #666; margin-bottom: 5px; }
-        audio { width: 100%; margin: 10px 0; }
-        textarea { width: 100%; height: 60px; margin-top: 5px; border-radius: 5px; border: 1px solid #ddd; }
+        .search-bar { width: 100%; padding: 12px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
+        .timeline-control { margin-bottom: 20px; font-size: 0.9em; display: flex; align-items: center; gap: 10px; }
+        .word-cloud { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; background: #eef1f7; border-radius: 8px; margin-bottom: 20px; justify-content: center; }
+        .cloud-word { cursor: pointer; color: #57606f; transition: transform 0.2s; }
+        .cloud-word:hover { transform: scale(1.1); color: #ff4757; }
+        .note-item { border-bottom: 1px solid #eee; padding: 15px 0; }
+        .timestamp { font-size: 0.85em; color: #666; font-weight: bold; }
+        audio { width: 100%; margin: 10px 0; height: 35px; }
+        textarea { width: 100%; height: 60px; margin-top: 10px; border-radius: 8px; border: 1px solid #ddd; padding: 8px; box-sizing: border-box; font-family: inherit; }
     </style>
 </head>
 <body>
@@ -24,10 +29,21 @@
     <div class="card">
         <button id="recordBtn" class="btn-record">Start Recording</button>
         <button id="stopBtn" class="btn-stop" disabled>Stop</button>
-        <div id="status" style="margin-top:10px; color: #ff4757; font-weight: bold;"></div>
+        <div id="status" style="margin-top:10px; color: #ff4757; font-size: 0.9em;"></div>
     </div>
 
-    <input type="text" id="searchBar" class="search-bar" placeholder="Search your notes...">
+    <div class="card">
+        <strong>Word Cloud</strong>
+        <div id="wordCloud" class="word-cloud"></div>
+    </div>
+
+    <input type="text" id="searchBar" class="search-bar" placeholder="Search keywords...">
+    
+    <div class="timeline-control">
+        <span>Timeline: Show last</span>
+        <input type="number" id="timelineDays" value="30" style="width: 50px;"> 
+        <span>days</span>
+    </div>
 
     <div id="notesList"></div>
 
@@ -36,15 +52,16 @@
         let mediaRecorder;
         let audioChunks = [];
 
-        // 1. Initialize IndexedDB
-        const request = indexedDB.open("VoiceNotesDB", 1);
+        // DB Setup
+        const request = indexedDB.open("VoiceNotesDB", 2);
         request.onupgradeneeded = (e) => {
             db = e.target.result;
-            db.createObjectStore("notes", { keyPath: "id", autoIncrement: true }).createIndex("text", "text");
+            if(!db.objectStoreNames.contains("notes")) {
+                db.createObjectStore("notes", { keyPath: "id", autoIncrement: true });
+            }
         };
         request.onsuccess = (e) => { db = e.target.result; displayNotes(); };
 
-        // 2. Recording Logic
         const recordBtn = document.getElementById('recordBtn');
         const stopBtn = document.getElementById('stopBtn');
         const status = document.getElementById('status');
@@ -54,13 +71,11 @@
             mediaRecorder = new MediaRecorder(stream);
             mediaRecorder.start();
             audioChunks = [];
-            
             mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
             mediaRecorder.onstop = saveNote;
-
             recordBtn.disabled = true;
             stopBtn.disabled = false;
-            status.innerText = "Recording...";
+            status.innerText = "● Recording...";
         };
 
         stopBtn.onclick = () => {
@@ -68,80 +83,45 @@
             recordBtn.disabled = false;
             stopBtn.disabled = true;
             status.innerText = "";
+            // Automatic refresh is handled inside onstop (saveNote)
         };
 
         async function saveNote() {
             const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-            const timestamp = new Date();
+            const now = new Date();
             const newNote = {
                 audio: audioBlob,
                 text: "",
-                date: timestamp.toLocaleDateString(),
-                time: timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                rawDate: timestamp
+                date: now.toLocaleDateString(),
+                time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                timestamp: now.getTime()
             };
-            
             const tx = db.transaction("notes", "readwrite");
             tx.objectStore("notes").add(newNote);
-            tx.oncomplete = displayNotes;
+            tx.oncomplete = () => displayNotes(); // Auto Refresh
         }
 
-        // 3. UI and Search Logic
-        async function displayNotes(filter = "") {
+        async function displayNotes() {
             const list = document.getElementById('notesList');
+            const cloud = document.getElementById('wordCloud');
+            const filter = document.getElementById('searchBar').value.toLowerCase();
+            const daysLimit = document.getElementById('timelineDays').value;
+            const cutoff = Date.now() - (daysLimit * 24 * 60 * 60 * 1000);
+
             list.innerHTML = "";
+            let allText = "";
+
             const tx = db.transaction("notes", "readonly");
             const store = tx.objectStore("notes");
-            const cursorRequest = store.openCursor(null, 'prev'); // Newest first
+            const cursorRequest = store.openCursor(null, 'prev');
 
             cursorRequest.onsuccess = (e) => {
                 const cursor = e.target.result;
                 if (cursor) {
                     const note = cursor.value;
-                    if (note.text.toLowerCase().includes(filter.toLowerCase())) {
-                        const item = document.createElement('div');
-                        item.className = "card note-item";
-                        item.innerHTML = `
-                            <div class="timestamp">📅 ${note.date} at ${note.time}</div>
-                            <audio controls src="${URL.createObjectURL(note.audio)}"></audio>
-                            <textarea placeholder="Add a note..." onchange="updateNoteText(${note.id}, this.value)">${note.text}</textarea>
-                            <button onclick="deleteNote(${note.id})" style="color:red; background:none; font-size:0.8em; margin-top:5px; padding:0;">Delete</button>
-                        `;
-                        list.appendChild(item);
-                    }
-                    cursor.continue();
-                }
-            };
-        }
+                    const matchesSearch = note.text.toLowerCase().includes(filter);
+                    const matchesTimeline = note.timestamp > cutoff;
 
-        window.updateNoteText = (id, newText) => {
-            const tx = db.transaction("notes", "readwrite");
-            const store = tx.objectStore("notes");
-            store.get(id).onsuccess = (e) => {
-                const data = e.target.result;
-                data.text = newText;
-                store.put(data);
-            };
-        };
-
-        window.deleteNote = (id) => {
-            if(confirm("Delete this recording?")) {
-                const tx = db.transaction("notes", "readwrite");
-                tx.objectStore("notes").delete(id);
-                tx.oncomplete = displayNotes;
-            }
-        };
-
-        document.getElementById('searchBar').oninput = (e) => displayNotes(e.target.value);
-    </script>
-    <script>
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js')
-        .then(reg => console.log('Service Worker registered!'))
-        .catch(err => console.log('Service Worker registration failed:', err));
-    });
-  }
-</script>
-</body>
-</html>
+                    if (matchesSearch && matchesTimeline) {
+                        allText += " " + note.text;
+                        const item = document.createElement('div
