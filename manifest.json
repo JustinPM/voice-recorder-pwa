@@ -1,0 +1,11 @@
+{
+  "name": "VoiceNotes PWA",
+  "short_name": "VoiceNotes",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ff4757",
+  "icons": [
+    { "src": "icon.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
