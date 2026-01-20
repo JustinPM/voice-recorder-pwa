@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoiceNotes PWA</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f4f4f9; }
+        .card { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        button { padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; }
+        .btn-record { background: #ff4757; color: white; }
+        .btn-stop { background: #2f3542; color: white; }
+        .search-bar { width: 100%; padding: 10px; margin-bottom: 20px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
+        .note-item { border-bottom: 1px solid #eee; padding: 10px 0; }
+        .timestamp { font-size: 0.85em; color: #666; margin-bottom: 5px; }
+        audio { width: 100%; margin: 10px 0; }
+        textarea { width: 100%; height: 60px; margin-top: 5px; border-radius: 5px; border: 1px solid #ddd; }
+    </style>
+</head>
+<body>
+
+    <h2>🎙️ VoiceNotes</h2>
+    
+    <div class="card">
+        <button id="recordBtn" class="btn-record">Start Recording</button>
+        <button id="stopBtn" class="btn-stop" disabled>Stop</button>
+        <div id="status" style="margin-top:10px; color: #ff4757; font-weight: bold;"></div>
+    </div>
+
+    <input type="text" id="searchBar" class="search-bar" placeholder="Search your notes...">
+
+    <div id="notesList"></div>
+
+    <script>
+        let db;
+        let mediaRecorder;
+        let audioChunks = [];
+
+        // 1. Initialize IndexedDB
+        const request = indexedDB.open("VoiceNotesDB", 1);
+        request.onupgradeneeded = (e) => {
+            db = e.target.result;
+            db.createObjectStore("notes", { keyPath: "id", autoIncrement: true }).createIndex("text", "text");
+        };
+        request.onsuccess = (e) => { db = e.target.result; displayNotes(); };
+
+        // 2. Recording Logic
+        const recordBtn = document.getElementById('recordBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const status = document.getElementById('status');
+
+        recordBtn.onclick = async () => {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            mediaRecorder.start();
+            audioChunks = [];
+            
+            mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+            mediaRecorder.onstop = saveNote;
+
+            recordBtn.disabled = true;
+            stopBtn.disabled = false;
+            status.innerText = "Recording...";
+        };
+
+        stopBtn.onclick = () => {
+            mediaRecorder.stop();
+            recordBtn.disabled = false;
+            stopBtn.disabled = true;
+            status.innerText = "";
+        };
+
+        async function saveNote() {
+            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            const timestamp = new Date();
+            const newNote = {
+                audio: audioBlob,
+                text: "",
+                date: timestamp.toLocaleDateString(),
+                time: timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                rawDate: timestamp
+            };
+            
+            const tx = db.transaction("notes", "readwrite");
+            tx.objectStore("notes").add(newNote);
+            tx.oncomplete = displayNotes;
+        }
+
+        // 3. UI and Search Logic
+        async function displayNotes(filter = "") {
+            const list = document.getElementById('notesList');
+            list.innerHTML = "";
+            const tx = db.transaction("notes", "readonly");
+            const store = tx.objectStore("notes");
+            const cursorRequest = store.openCursor(null, 'prev'); // Newest first
+
+            cursorRequest.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor) {
+                    const note = cursor.value;
+                    if (note.text.toLowerCase().includes(filter.toLowerCase())) {
+                        const item = document.createElement('div');
+                        item.className = "card note-item";
+                        item.innerHTML = `
+                            <div class="timestamp">📅 ${note.date} at ${note.time}</div>
+                            <audio controls src="${URL.createObjectURL(note.audio)}"></audio>
+                            <textarea placeholder="Add a note..." onchange="updateNoteText(${note.id}, this.value)">${note.text}</textarea>
+                            <button onclick="deleteNote(${note.id})" style="color:red; background:none; font-size:0.8em; margin-top:5px; padding:0;">Delete</button>
+                        `;
+                        list.appendChild(item);
+                    }
+                    cursor.continue();
+                }
+            };
+        }
+
+        window.updateNoteText = (id, newText) => {
+            const tx = db.transaction("notes", "readwrite");
+            const store = tx.objectStore("notes");
+            store.get(id).onsuccess = (e) => {
+                const data = e.target.result;
+                data.text = newText;
+                store.put(data);
+            };
+        };
+
+        window.deleteNote = (id) => {
+            if(confirm("Delete this recording?")) {
+                const tx = db.transaction("notes", "readwrite");
+                tx.objectStore("notes").delete(id);
+                tx.oncomplete = displayNotes;
+            }
+        };
+
+        document.getElementById('searchBar').oninput = (e) => displayNotes(e.target.value);
+    </script>
+</body>
+</html>
